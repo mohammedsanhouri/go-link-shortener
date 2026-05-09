@@ -1,0 +1,12 @@
+# Terraform local state
+*.tfstate
+*.tfstate.backup
+.terraform/
+*.tfvars
+
+# Go binaries and zips
+bootstrap
+lambda.zip
+
+# Mac/Linux system files
+.DS_Store
