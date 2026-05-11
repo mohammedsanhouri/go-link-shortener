@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -23,11 +24,9 @@ type URLItem struct {
 }
 
 var dbClient *dynamodb.Client
-
-const tableName = "ShortUrls"
+var tableName = os.Getenv("TABLE_NAME")
 
 func init() {
-	// init() runs once when the Lambda container starts (Optimization)
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		panic("Configuration error: " + err.Error())
@@ -42,17 +41,33 @@ func GenerateShortID(longURL string) string {
 }
 
 func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	// PATH 1: Create a Short Link (POST)
+	// CORS Headers - Set to "*" for now so you can test locally or from S3 later.
+	// You can change this to your specific S3 URL once the bucket is created.
+	headers := map[string]string{
+		"Access-Control-Allow-Origin":  "*",
+		"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+		"Access-Control-Allow-Headers": "Content-Type",
+	}
+
+	// 1. HANDLE CORS PRE-FLIGHT (OPTIONS)
+	if request.HTTPMethod == "OPTIONS" {
+		return events.APIGatewayProxyResponse{
+			StatusCode: 200,
+			Headers:    headers,
+			Body:       "",
+		}, nil
+	}
+
+	// 2. PATH 1: Create a Short Link (POST)
 	if request.HTTPMethod == "POST" {
 		var item URLItem
 		err := json.Unmarshal([]byte(request.Body), &item)
 		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: 400, Body: "Invalid JSON"}, nil
+			return events.APIGatewayProxyResponse{StatusCode: 400, Body: "Invalid JSON", Headers: headers}, nil
 		}
 
 		item.ShortID = GenerateShortID(item.LongURL)
 
-		// Save to DynamoDB
 		av, _ := attributevalue.MarshalMap(item)
 		_, err = dbClient.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(tableName),
@@ -60,19 +75,21 @@ func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		})
 
 		if err != nil {
-			return events.APIGatewayProxyResponse{StatusCode: 500, Body: "Database Error"}, nil
+			return events.APIGatewayProxyResponse{StatusCode: 500, Body: "Database Error", Headers: headers}, nil
 		}
+
+		// Add JSON content type to our existing CORS headers
+		headers["Content-Type"] = "application/json"
 
 		return events.APIGatewayProxyResponse{
 			StatusCode: 201,
-			Headers:    map[string]string{"Content-Type": "application/json"},
+			Headers:    headers,
 			Body:       "{\"short_url\": \"" + item.ShortID + "\"}",
 		}, nil
 	}
 
-	// PATH 2: Redirect a User (GET)
+	// 3. PATH 2: Redirect a User (GET)
 	if request.HTTPMethod == "GET" {
-		// API Gateway passes the {id} in PathParameters
 		shortID := request.PathParameters["id"]
 
 		result, err := dbClient.GetItem(ctx, &dynamodb.GetItemInput{
@@ -83,20 +100,22 @@ func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		})
 
 		if err != nil || result.Item == nil {
-			return events.APIGatewayProxyResponse{StatusCode: 404, Body: "URL not found"}, nil
+			return events.APIGatewayProxyResponse{StatusCode: 404, Body: "URL not found", Headers: headers}, nil
 		}
 
 		var foundItem URLItem
 		attributevalue.UnmarshalMap(result.Item, &foundItem)
 
-		// This is the "Magic" - HTTP 301 tells the browser to go elsewhere
+		// Overwrite headers for redirection while keeping CORS
+		headers["Location"] = foundItem.LongURL
+
 		return events.APIGatewayProxyResponse{
 			StatusCode: 301,
-			Headers:    map[string]string{"Location": foundItem.LongURL},
+			Headers:    headers,
 		}, nil
 	}
 
-	return events.APIGatewayProxyResponse{StatusCode: 405, Body: "Method Not Allowed"}, nil
+	return events.APIGatewayProxyResponse{StatusCode: 405, Body: "Method Not Allowed", Headers: headers}, nil
 }
 
 func main() {

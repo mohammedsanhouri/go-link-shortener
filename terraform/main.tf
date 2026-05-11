@@ -61,6 +61,11 @@ resource "aws_lambda_function" "url_shortener" {
 resource "aws_apigatewayv2_api" "lambda_api" {
   name          = "v2-url-shortener-api"
   protocol_type = "HTTP"
+  cors_configuration {
+    allow_origins = ["*"] # In production, you'd put your domain here
+    allow_methods = ["POST", "GET", "OPTIONS"]
+    allow_headers = ["content-type"]
+  }  
 }
 
 resource "aws_apigatewayv2_stage" "lambda_stage" {
@@ -106,4 +111,56 @@ output "base_url" {
 resource "aws_iam_role_policy_attachment" "lambda_logs" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+    # S3 Bucket for the Website
+    resource "aws_s3_bucket" "webapp" {
+      bucket = "mohammed-shortener-app-2026-5-v1"
+    }
+
+    resource "aws_s3_bucket_website_configuration" "webapp_config" {
+      bucket = aws_s3_bucket.webapp.id
+      index_document { suffix = "index.html" }
+    }
+
+    # Public Access (Required for a website)
+    resource "aws_s3_bucket_public_access_block" "webapp_access" {
+      bucket = aws_s3_bucket.webapp.id
+      block_public_acls       = false
+      block_public_policy     = false
+      ignore_public_acls      = false
+      restrict_public_buckets = false
+    }
+
+    resource "aws_s3_bucket_policy" "webapp_policy" {
+      bucket = aws_s3_bucket.webapp.id
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [{
+          Effect    = "Allow"
+          Principal = "*"
+          Action    = "s3:GetObject"
+          Resource  = "${aws_s3_bucket.webapp.arn}/*"
+        }]
+      })
+    }
+
+    output "website_url" {
+      value = aws_s3_bucket_website_configuration.webapp_config.website_endpoint
+    }
+
+resource "aws_s3_object" "index_html" {
+  bucket       = aws_s3_bucket.webapp.id
+  key          = "index.html"
+  content_type = "text/html"
+
+  content = templatefile("${path.module}/../index.html.tftpl", {
+    # CHANGE THIS LINE: Key must match what's in the .tftpl file exactly
+    API_URL = aws_apigatewayv2_stage.lambda_stage.invoke_url
+  })
+
+  etag = md5(templatefile("${path.module}/../index.html.tftpl", {
+    # AND THIS LINE:
+    API_URL = aws_apigatewayv2_stage.lambda_stage.invoke_url
+  }))
 }
